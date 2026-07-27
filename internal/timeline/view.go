@@ -39,18 +39,18 @@ func (m Model) View() string {
 	}
 
 	footer := m.footer()
-	if m.loading && len(m.posts) == 0 {
-		center := lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center,
+	if m.cur().loading && len(m.cur().posts) == 0 {
+		center := lipgloss.Place(m.cur().viewport.Width, m.cur().viewport.Height, lipgloss.Center, lipgloss.Center,
 			lipgloss.NewStyle().Foreground(lavender).Render(m.spinner.View()+" gathering xeets…"))
 		return m.shell(center, footer)
 	}
-	if m.err != nil && len(m.posts) == 0 {
-		center := lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center,
-			lipgloss.NewStyle().Foreground(red).Width(max(20, m.viewport.Width-8)).Align(lipgloss.Center).
-				Render("the cat lost the timeline\n\n"+m.err.Error()))
+	if m.cur().err != nil && len(m.cur().posts) == 0 {
+		center := lipgloss.Place(m.cur().viewport.Width, m.cur().viewport.Height, lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Foreground(red).Width(max(20, m.cur().viewport.Width-8)).Align(lipgloss.Center).
+				Render("the cat lost the timeline\n\n"+m.cur().err.Error()))
 		return m.shell(center, m.errorFooter(true))
 	}
-	return m.shell(m.viewport.View(), footer)
+	return m.shell(m.cur().viewport.View(), footer)
 }
 
 func (m Model) shell(center, footer string) string {
@@ -76,7 +76,7 @@ func (m Model) contentWidth() int {
 
 func (m Model) header(width int) string {
 	status := "for you"
-	switch m.feed {
+	switch m.cur().feed {
 	case FeedForYou:
 		status = "for you"
 	case FeedFollowing:
@@ -84,25 +84,25 @@ func (m Model) header(width int) string {
 	case FeedBookmarks:
 		status = "bookmarks"
 	case FeedSearch:
-		status = truncateRunes("search: "+m.searchQuery, max(9, width-12))
+		status = truncateRunes("search: "+m.cur().searchQuery, max(9, width-12))
 	case FeedList:
-		status = truncateRunes("List: "+m.listName, max(9, width-12))
+		status = truncateRunes("List: "+m.cur().listName, max(9, width-12))
 	}
 	if m.mode == modeThread {
 		status = "replies"
-		if root, ok := m.threadRootPost(); ok && root.Handle != "" {
+		if root, ok := m.cur().threadRootPost(); ok && root.Handle != "" {
 			status = truncateRunes("replies to @"+root.Handle, max(9, width-12))
 		}
 	}
-	if m.mode == modeThread && (m.threadLoading || m.threadMore) {
+	if m.mode == modeThread && (m.cur().threadLoading || m.cur().threadMore) {
 		status = m.spinner.View() + " loading replies"
-	} else if m.refreshing {
+	} else if m.cur().refreshing {
 		status = m.spinner.View() + " refreshing"
-	} else if m.loadingMore {
+	} else if m.cur().loadingMore {
 		status = m.spinner.View() + " loading more"
 	}
 	face := "( o.o )"
-	if m.err != nil || (m.mode == modeThread && m.threadErr != nil) {
+	if m.cur().err != nil || (m.mode == modeThread && m.cur().threadErr != nil) {
 		face = "( >.< )"
 	}
 	cat := lipgloss.NewStyle().Foreground(pink).Render(" /\\_/\\") +
@@ -116,25 +116,25 @@ func (m Model) footer() string {
 	if m.toast != "" {
 		return m.toast
 	}
-	if m.err != nil {
+	if m.cur().err != nil {
 		return m.errorFooter(false)
 	}
 	position := 0
-	if len(m.posts) > 0 {
-		position = m.selected + 1
+	if len(m.cur().posts) > 0 {
+		position = m.cur().selected + 1
 	}
-	if m.contentWidth() < 50 || len(m.posts) == 0 {
-		return fmt.Sprintf("%d/%d  ·  ? help", position, len(m.posts))
+	if m.contentWidth() < 50 || len(m.cur().posts) == 0 {
+		return fmt.Sprintf("%d/%d  ·  ? help", position, len(m.cur().posts))
 	}
-	if m.expanded {
-		return fmt.Sprintf("%d/%d · e collapse · o browser · ? help", position, len(m.posts))
+	if m.cur().expanded {
+		return fmt.Sprintf("%d/%d · e collapse · o browser · ? help", position, len(m.cur().posts))
 	}
-	return fmt.Sprintf("%d/%d · enter replies · e read · r reply · ? help", position, len(m.posts))
+	return fmt.Sprintf("%d/%d · enter replies · e read · r reply · ? help", position, len(m.cur().posts))
 }
 
 func (m Model) errorFooter(includeQuit bool) string {
 	parts := []string{"R retry"}
-	if errors.Is(m.err, api.ErrSessionExpired) {
+	if errors.Is(m.cur().err, api.ErrSessionExpired) {
 		parts = append([]string{"a reconnect"}, parts...)
 	}
 	if includeQuit {
@@ -145,62 +145,62 @@ func (m Model) errorFooter(includeQuit bool) string {
 
 func (m Model) viewThread() string {
 	footer := m.threadFooter()
-	if m.threadLoading && len(m.threadPosts) <= 1 {
-		center := lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center,
+	if m.cur().threadLoading && len(m.cur().threadPosts) <= 1 {
+		center := lipgloss.Place(m.cur().viewport.Width, m.cur().viewport.Height, lipgloss.Center, lipgloss.Center,
 			lipgloss.NewStyle().Foreground(lavender).Render(m.spinner.View()+" gathering replies…"))
 		return m.shell(center, footer)
 	}
 	// The thread opens pre-seeded with the focal post, so a fetch failure
 	// almost never leaves the list empty. Show the error over the posts we
 	// have instead of hiding it behind a bare retry footer.
-	if m.threadErr != nil {
-		center := lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center,
-			lipgloss.NewStyle().Foreground(red).Width(max(20, m.viewport.Width-8)).Align(lipgloss.Center).
-				Render("the cat lost the replies\n\n"+m.threadErr.Error()))
+	if m.cur().threadErr != nil {
+		center := lipgloss.Place(m.cur().viewport.Width, m.cur().viewport.Height, lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Foreground(red).Width(max(20, m.cur().viewport.Width-8)).Align(lipgloss.Center).
+				Render("the cat lost the replies\n\n"+m.cur().threadErr.Error()))
 		return m.shell(center, footer)
 	}
-	return m.shell(m.viewport.View(), footer)
+	return m.shell(m.cur().viewport.View(), footer)
 }
 
 func (m Model) threadFooter() string {
 	if m.toast != "" {
 		return m.toast
 	}
-	if m.threadErr != nil {
+	if m.cur().threadErr != nil {
 		parts := []string{"R retry"}
-		if errors.Is(m.threadErr, api.ErrSessionExpired) {
+		if errors.Is(m.cur().threadErr, api.ErrSessionExpired) {
 			parts = append([]string{"a reconnect"}, parts...)
 		}
 		parts = append(parts, "esc back")
 		return strings.Join(parts, "  ·  ")
 	}
 	position := 0
-	if len(m.threadPosts) > 0 {
-		position = m.selected + 1
+	if len(m.cur().threadPosts) > 0 {
+		position = m.cur().selected + 1
 	}
-	return fmt.Sprintf("%d/%d · r reply · e read · esc back · ? help", position, len(m.threadPosts))
+	return fmt.Sprintf("%d/%d · r reply · e read · esc back · ? help", position, len(m.cur().threadPosts))
 }
 
 func (m Model) renderThreadContent() (string, []int, []int) {
-	if len(m.threadPosts) == 0 {
+	if len(m.cur().threadPosts) == 0 {
 		return lipgloss.NewStyle().Foreground(muted).Width(m.contentWidth()).Align(lipgloss.Center).Render("no replies yet · press r to start one"), nil, nil
 	}
-	handles := make(map[string]string, len(m.threadPosts))
-	for _, item := range m.threadPosts {
+	handles := make(map[string]string, len(m.cur().threadPosts))
+	for _, item := range m.cur().threadPosts {
 		handles[item.ID] = item.Handle
 	}
-	pieces := make([]string, 0, 2*len(m.threadPosts))
-	starts := make([]int, 0, len(m.threadPosts))
-	ends := make([]int, 0, len(m.threadPosts))
+	pieces := make([]string, 0, 2*len(m.cur().threadPosts))
+	starts := make([]int, 0, len(m.cur().threadPosts))
+	ends := make([]int, 0, len(m.cur().threadPosts))
 	line := 0
-	for i, item := range m.threadPosts {
+	for i, item := range m.cur().threadPosts {
 		// The gap between posts carries this post's ancestor rails so the
 		// conversation reads as one unbroken line down the left.
 		if i > 0 {
 			pieces = append(pieces, threadSpacer(item.Depth))
 			line++
 		}
-		block := m.renderPost(item.TimelinePost, i == m.selected, true, item.Depth)
+		block := m.renderPost(item.TimelinePost, i == m.cur().selected, true, item.Depth)
 		if context := m.replyContext(i, handles); context != "" {
 			block = context + "\n" + block
 		}
@@ -265,11 +265,11 @@ func selectionAccent(depth int) lipgloss.Color {
 // parent is not the post directly above it, or one nested past maxRailDepth,
 // where every further level draws at the same indent.
 func (m Model) replyContext(index int, handles map[string]string) string {
-	item := m.threadPosts[index]
+	item := m.cur().threadPosts[index]
 	if index == 0 || item.Depth <= 1 {
 		return ""
 	}
-	if item.InReplyToID == m.threadPosts[index-1].ID && item.Depth <= maxRailDepth {
+	if item.InReplyToID == m.cur().threadPosts[index-1].ID && item.Depth <= maxRailDepth {
 		return ""
 	}
 	handle := handles[item.InReplyToID]
@@ -281,28 +281,28 @@ func (m Model) replyContext(index int, handles map[string]string) string {
 }
 
 func (m Model) renderFeedContent() (string, []int, []int) {
-	if len(m.posts) == 0 {
+	if len(m.cur().posts) == 0 {
 		return lipgloss.NewStyle().Foreground(muted).Width(m.contentWidth()).Align(lipgloss.Center).Render("the timeline is quiet"), nil, nil
 	}
-	blocks := make([]string, 0, len(m.posts))
-	starts := make([]int, 0, len(m.posts))
-	ends := make([]int, 0, len(m.posts))
+	blocks := make([]string, 0, len(m.cur().posts))
+	starts := make([]int, 0, len(m.cur().posts))
+	ends := make([]int, 0, len(m.cur().posts))
 	line := 0
-	for i, post := range m.posts {
-		showImage := abs(i-m.selected) <= inlineImageRadius
+	for i, post := range m.cur().posts {
+		showImage := abs(i-m.cur().selected) <= inlineImageRadius
 		if m.imageMode == imageModeNative || m.imageMode == imageModeWezTerm {
 			// Native previews are cheap escape sequences rather than large ANSI
 			// mosaics. Keep cached images in the feed so they do not disappear as
 			// soon as the selection moves away from their post.
 			showImage = true
 		}
-		block := m.renderPost(post, i == m.selected, showImage, feedDepth)
+		block := m.renderPost(post, i == m.cur().selected, showImage, feedDepth)
 		height := lipgloss.Height(block)
 		starts = append(starts, line)
 		ends = append(ends, line+height-1)
 		blocks = append(blocks, block)
 		line += height
-		if i < len(m.posts)-1 {
+		if i < len(m.cur().posts)-1 {
 			line++
 		}
 	}
@@ -349,7 +349,7 @@ func (m Model) renderPost(post api.TimelinePost, selected, nearSelection bool, d
 	if body != "" {
 		wrapped := lipgloss.NewStyle().Width(max(12, width-pad)).Render(highlightEntities(body, textColor))
 		textLines := strings.Split(wrapped, "\n")
-		if !(selected && m.expanded) && len(textLines) > 4 {
+		if !(selected && m.cur().expanded) && len(textLines) > 4 {
 			textLines = textLines[:4]
 			textLines[3] = ansi.Truncate(textLines[3], max(2, width-pad-2), "…")
 		}
