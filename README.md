@@ -254,6 +254,22 @@ and `ctrl+o` file attachment still works.
 
 </details>
 
+## mcp (read-only)
+
+`xeet mcp serve` exposes post search, your bookmarks, and a session health
+check to mcp clients (chatgpt through a secure mcp tunnel, claude code, codex)
+over stdio. it reads through the saved browser session and can only read:
+the three tools are the whole surface, and nothing there posts, likes, or
+bookmarks.
+
+```bash
+xeet mcp serve --allow-account @you        # only allowlisted accounts, no fallback
+xeet mcp call get_x_session_health --allow-account @you
+```
+
+see [docs/mcp.md](docs/mcp.md) for the output contract, error codes, and the
+launchd + tunnel deployment.
+
 ## how it works
 
 xeet reuses the x.com session already in your browser and speaks the same

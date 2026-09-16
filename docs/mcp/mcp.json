@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "xeet": {
+      "command": "/usr/local/bin/xeet",
+      "args": ["mcp", "serve", "--allow-account", "@alice"]
+    }
+  }
+}
