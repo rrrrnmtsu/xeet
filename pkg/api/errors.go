@@ -217,3 +217,10 @@ func graphQLError(payload any) error {
 	}
 	return mapGraphQLError(issues[0].code, issues[0].message)
 }
+
+// ErrUpstreamChanged means X answered, but not in a shape xeet understands:
+// a persisted-query id rotated and rediscovery found nothing, or a response
+// body no longer carries the fields the parser relies on. It is distinct from
+// a transport failure because retrying will not help; the client needs an
+// update. Wrapping sites add detail with %w.
+var ErrUpstreamChanged = errors.New("x changed its response shape or endpoint; update xeet")

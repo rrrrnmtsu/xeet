@@ -27,20 +27,25 @@ type TimelineMedia struct {
 }
 
 type TimelinePost struct {
-	ID             string
-	Text           string
-	AuthorName     string
-	Handle         string
-	CreatedAt      time.Time
-	ReplyCount     int
-	RepostCount    int
-	LikeCount      int
-	ViewCount      string
-	MediaCount     int
-	Media          []TimelineMedia
-	Liked          bool
-	InReplyToID    string
-	ConversationID string
+	ID          string
+	Text        string
+	AuthorName  string
+	Handle      string
+	CreatedAt   time.Time
+	ReplyCount  int
+	RepostCount int
+	LikeCount   int
+	// EngagementKnown reports whether X included the reply/repost/like
+	// counters for this post at all. A zero count with EngagementKnown false is
+	// "not provided", not "nobody reacted"; callers that serialize counts
+	// should emit null in that case rather than 0.
+	EngagementKnown bool
+	ViewCount       string
+	MediaCount      int
+	Media           []TimelineMedia
+	Liked           bool
+	InReplyToID     string
+	ConversationID  string
 }
 
 type TimelinePage struct {
@@ -134,7 +139,7 @@ func (c *WebClient) fetchTimelineOp(
 	if qid == "" {
 		fresh, discoverErr := c.discoverOperation(ctx, operation)
 		if discoverErr != nil {
-			return nil, fmt.Errorf("discover %s endpoint: %w", operation, discoverErr)
+			return nil, fmt.Errorf("%w: discover %s endpoint: %w", ErrUpstreamChanged, operation, discoverErr)
 		}
 		qid = fresh
 	}
@@ -146,7 +151,7 @@ func (c *WebClient) fetchTimelineOp(
 	if needsQueryIDRefresh(res) {
 		fresh, discoverErr := c.discoverOperation(ctx, operation)
 		if discoverErr != nil {
-			return nil, fmt.Errorf("home timeline endpoint changed and discovery failed: %w", discoverErr)
+			return nil, fmt.Errorf("%w: %s endpoint changed and discovery failed: %w", ErrUpstreamChanged, operation, discoverErr)
 		}
 		res, err = c.doTimelineOp(ctx, operation, fresh, buildVars(count), withTransactionID)
 		if err != nil {
@@ -169,7 +174,7 @@ func (c *WebClient) fetchTimelineOp(
 	}
 	root, ok := payload.(map[string]any)
 	if !ok || root["data"] == nil {
-		return nil, fmt.Errorf("x returned a malformed timeline response")
+		return nil, fmt.Errorf("%w: x returned a malformed timeline response", ErrUpstreamChanged)
 	}
 	if err := graphQLError(payload); err != nil {
 		return nil, err
@@ -340,6 +345,10 @@ func parseTimelineItem(item map[string]any) (TimelinePost, bool) {
 	post.ReplyCount = intValue(legacy["reply_count"])
 	post.RepostCount = intValue(legacy["retweet_count"])
 	post.LikeCount = intValue(legacy["favorite_count"])
+	_, hasReplies := legacy["reply_count"]
+	_, hasReposts := legacy["retweet_count"]
+	_, hasLikes := legacy["favorite_count"]
+	post.EngagementKnown = hasReplies || hasReposts || hasLikes
 	post.Liked, _ = legacy["favorited"].(bool)
 	post.InReplyToID, _ = legacy["in_reply_to_status_id_str"].(string)
 	post.ConversationID, _ = legacy["conversation_id_str"].(string)

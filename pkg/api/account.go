@@ -41,7 +41,7 @@ func (c *WebClient) FetchViewer(ctx context.Context) (*Account, error) {
 	if needsQueryIDRefresh(res) {
 		fresh, discoverErr := c.discoverOperation(ctx, "Viewer")
 		if discoverErr != nil {
-			return nil, fmt.Errorf("account identity endpoint changed and discovery failed: %w", discoverErr)
+			return nil, fmt.Errorf("%w: account identity endpoint changed and discovery failed: %w", ErrUpstreamChanged, discoverErr)
 		}
 		res, err = c.doViewer(ctx, fresh)
 		if err != nil {
@@ -67,7 +67,7 @@ func (c *WebClient) FetchViewer(ctx context.Context) (*Account, error) {
 	}
 	account, ok := accountFromViewer(payload)
 	if !ok || account.Handle == "" {
-		return nil, fmt.Errorf("x returned no account identity for this session")
+		return nil, fmt.Errorf("%w: x returned no account identity for this session", ErrUpstreamChanged)
 	}
 	return &account, nil
 }
