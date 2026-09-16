@@ -9,13 +9,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/melqtx/xeet/pkg/config"
 	xmcp "github.com/melqtx/xeet/pkg/mcp"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 )
 
-const allowedAccountsEnv = "XEET_MCP_ALLOWED_ACCOUNTS"
+const (
+	allowedAccountsEnv = "XEET_MCP_ALLOWED_ACCOUNTS"
+	secretsFileEnv     = "XEET_MCP_SECRETS_FILE"
+)
 
 var (
 	mcpAllowAccounts []string
@@ -24,6 +28,7 @@ var (
 	mcpMaxPages      int
 	mcpMaxConcurrent int
 	mcpPageDelay     time.Duration
+	mcpSecretsFile   string
 
 	mcpCallQuery   string
 	mcpCallAccount string
@@ -82,6 +87,8 @@ func init() {
 		command.Flags().IntVar(&mcpMaxPages, "max-pages", xmcp.DefaultMaxPages, "upstream pages one call may fetch (max 10)")
 		command.Flags().IntVar(&mcpMaxConcurrent, "max-concurrent", xmcp.DefaultMaxConcurrent, "tool calls allowed in flight at once")
 		command.Flags().DurationVar(&mcpPageDelay, "page-delay", xmcp.DefaultPageDelay, "pause between upstream pages within one call")
+		command.Flags().StringVar(&mcpSecretsFile, "secrets-file", "",
+			"read session cookies from this 0600 file instead of the OS keyring (headless hosts). Falls back to "+secretsFileEnv)
 	}
 	mcpCallCmd.Flags().StringVar(&mcpCallQuery, "query", "", "search query (search_x_posts)")
 	mcpCallCmd.Flags().StringVar(&mcpCallAccount, "account", "", "account_id argument (handle or user id)")
@@ -106,8 +113,31 @@ func mcpAllowedAccounts() []string {
 	return accounts
 }
 
+// mcpStore picks the keyring. A headless host has no Secret Service, so the
+// deployment can point at a private file; the OS user owning that file and
+// the config becomes the boundary the keyring would otherwise be.
+func mcpStore() (xmcp.Store, error) {
+	path := mcpSecretsFile
+	if path == "" {
+		path = os.Getenv(secretsFileEnv)
+	}
+	if path == "" {
+		return config.NewConfigManager()
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return config.NewConfigManagerAt(home, config.NewFileSecretStore(path)), nil
+}
+
 func newMCPServer() (*xmcp.Server, error) {
+	store, err := mcpStore()
+	if err != nil {
+		return nil, err
+	}
 	return xmcp.New(xmcp.Options{
+		Store:           store,
 		AllowedAccounts: mcpAllowedAccounts(),
 		Timeout:         mcpTimeout,
 		HealthTimeout:   mcpHealthTimeout,

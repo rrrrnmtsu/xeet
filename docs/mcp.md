@@ -32,6 +32,7 @@ XEET_MCP_ALLOWED_ACCOUNTS=@alice xeet mcp serve  # same, for launchd / systemd u
 | `--max-pages` | 3 | 10 | upstream pages one call may fetch |
 | `--page-delay` | 1s | | pause between pages inside one call |
 | `--max-concurrent` | 1 | | calls in flight; others wait 5s then get `BUSY` |
+| `--secrets-file` | (OS keyring) | | read cookies from this 0600 YAML instead of the keyring; env `XEET_MCP_SECRETS_FILE` |
 
 stdout carries the protocol only. Diagnostics are JSON lines on stderr
 (tool, account id, status, code, count, duration) and never include the
@@ -181,32 +182,139 @@ or opens a browser. `last_authenticated_at` is per server process.
 | `PARTIAL_RESULT` | a page after the first failed; see `cause` | resume with `next_cursor` |
 | `BUSY` | concurrency cap reached | retry shortly |
 
-## Where to run it: Mac, not the VPS
+## Where to run it
 
-The session lives in the OS keyring (macOS Keychain or Linux Secret
-Service) and was imported from a browser on the same machine. The shared
-VPS has D-Bus but no Secret Service provider (`gnome-keyring-daemon` and
-`secret-tool` are absent), no browser to import from, and a datacenter IP
-that X may treat differently from the residential one the cookies were
-issued to. Running headless gnome-keyring on the VPS and copying cookies
-across would work around all three, but every one of those workarounds is
-a new way for the session to break silently. So:
+The session normally lives in the OS keyring (macOS Keychain, Linux Secret
+Service). A headless VPS has neither a Secret Service provider nor a browser
+to import from, so the server there uses `--secrets-file` (or
+`XEET_MCP_SECRETS_FILE`): a 0600 YAML file owned by a dedicated OS user is
+the boundary the keyring would otherwise be. The store refuses files that
+are group/world readable or symlinked, and it understands the
+`go-keyring-base64:` wrapper the macOS Keychain hands back, so provisioning
+is one pipe from the Mac with no shell step that touches the value.
 
-- **the server runs on the Mac that ran `xeet auth`**, under launchd, and
-- **ChatGPT reaches it through OpenAI's Secure MCP Tunnel**, whose client
-  makes only outbound HTTPS from the Mac. No inbound port, no public URL.
+| | VPS (`/opt/xeet-mcp`, PM2) | Mac (launchd) |
+|---|---|---|
+| keyring | private file, dedicated user `xeetmcp` | Keychain, unlocked while logged in |
+| availability | always on | while the Mac is awake |
+| cookies | copied from the Mac once; re-copy after `xeet auth` | native |
+| X sees | datacenter IP | residential IP |
 
-The trade-off is availability: the tunnel is up while the Mac is awake and
-logged in (the Keychain must be unlocked). For a personal research tool that
-is acceptable; if it stops being acceptable, the Linux path is to provide
-Secret Service on the VPS and re-run `xeet auth` there with cookies exported
-manually, and the `KEYRING_UNAVAILABLE` code is what tells you it is not set
-up yet.
+The VPS is the primary deployment; the Mac path below stays documented as
+the fallback if X starts refusing the datacenter IP (the health tool will
+say `AUTH_REQUIRED` or `UPSTREAM_ERROR`).
 
-Linux builds are verified in CI (`GOOS=linux` amd64/arm64, `CGO_ENABLED=0`),
-so the binary itself is not the blocker.
+Linux builds are verified in CI (`GOOS=linux` amd64/arm64, `CGO_ENABLED=0`).
 
-## Deployment on the Mac (private, ChatGPT via Secure MCP Tunnel)
+## Deployment on the VPS (private, ChatGPT via Secure MCP Tunnel)
+
+Templates live in `docs/mcp/vps/`. Layout on the host:
+
+```
+/opt/xeet-mcp/
+├── bin/xeet                 # linux/amd64 build of this branch's commit
+├── xeet-mcp.sh              # runs `xeet mcp …` as xeetmcp with the private HOME
+├── start.sh                 # PM2 entry: .env → tunnel-client run
+├── ecosystem.config.cjs     # PM2 app "xeet-mcp-tunnel"
+├── .env                     # CONTROL_PLANE_API_KEY, CONTROL_PLANE_TUNNEL_ID (root:root 0600)
+├── .runtime/tunnel-client   # copy of the org's verified tunnel-client
+├── tunnel-profile/          # xeet-mcp.yaml + health-url
+└── home/                    # xeetmcp's HOME, 0700
+    ├── .xeet.yaml           # version 2, the one allowed account, no secrets
+    └── secrets.yaml         # auth_token:<id>, ct0:<id>; 0600 xeetmcp
+```
+
+1. Build and stage from the Mac:
+
+   ```bash
+   cd ~/dev/xeet && git log -1 --format=%H                       # source commit
+   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=$(git describe --tags --always) -X main.commit=$(git rev-parse --short HEAD)" -o /tmp/xeet-linux-amd64 .
+   scp /tmp/xeet-linux-amd64 xserver-vps:/tmp/xeet-mcp-bin
+   scp docs/mcp/vps/xeet-mcp.sh docs/mcp/vps/start.sh docs/mcp/vps/ecosystem.config.cjs xserver-vps:/tmp/
+   ```
+
+2. On the VPS, create the user and layout (idempotent):
+
+   ```bash
+   id xeetmcp >/dev/null 2>&1 || useradd --system --home-dir /opt/xeet-mcp/home --shell /usr/sbin/nologin --create-home xeetmcp
+   mkdir -p /opt/xeet-mcp/{bin,home,tunnel-profile,.runtime}
+   install -m 0755 /tmp/xeet-mcp-bin /opt/xeet-mcp/bin/xeet && rm /tmp/xeet-mcp-bin
+   install -m 0755 /tmp/xeet-mcp.sh /tmp/start.sh /opt/xeet-mcp/ && install -m 0644 /tmp/ecosystem.config.cjs /opt/xeet-mcp/
+   cp /opt/jquants-data-plane-tunnel/.runtime/tunnel-client /opt/xeet-mcp/.runtime/   # already SHA-verified copy
+   umask 077 && cat > /opt/xeet-mcp/home/.xeet.yaml <<'EOF'
+   version: 2
+   active: "<user-id>"
+   accounts:
+     "<user-id>":
+       handle: <handle>
+       session_browser: Chrome
+       session_profile: Default
+       session_domain: x.com
+   EOF
+   chown -R xeetmcp:xeetmcp /opt/xeet-mcp/home /opt/xeet-mcp/tunnel-profile && chmod 700 /opt/xeet-mcp/home /opt/xeet-mcp/tunnel-profile
+   ```
+
+3. Copy the two cookie values from the Mac Keychain. The values never
+   appear on a terminal; the store decodes the Keychain wrapper itself:
+
+   ```bash
+   { printf '"auth_token:<user-id>": "'; security find-generic-password -s xeet -a 'auth_token:<user-id>' -w | tr -d '\n'
+     printf '"\n"ct0:<user-id>": "';     security find-generic-password -s xeet -a 'ct0:<user-id>' -w | tr -d '\n'; printf '"\n'; } \
+   | ssh xserver-vps 'umask 077; cat > /opt/xeet-mcp/home/secrets.yaml && chown xeetmcp:xeetmcp /opt/xeet-mcp/home/secrets.yaml && chmod 600 /opt/xeet-mcp/home/secrets.yaml && echo ok'
+   ```
+
+   Re-run this after every `xeet auth` on the Mac; the server picks the new
+   pair up on the next call.
+
+4. Verify on the VPS, as the dedicated user, before any tunnel exists:
+
+   ```bash
+   /opt/xeet-mcp/xeet-mcp.sh call get_x_session_health          # expect connection: authenticated, account_match: true
+   /opt/xeet-mcp/xeet-mcp.sh call search_x_posts --query "golang tui" --limit 3
+   /opt/xeet-mcp/xeet-mcp.sh tools                                 # exactly the three tools
+   ```
+
+5. Tunnel and key (platform.openai.com). Create a Tunnel attached to the
+   ChatGPT workspace (or `tunnel-client admin tunnels create --name xeet-mcp
+   --description "xeet read-only X search/bookmarks" --organization-id … --workspace-id …`
+   with an admin key). Use a restricted runtime key with Tunnels Read+Use.
+   Put both in `/opt/xeet-mcp/.env` as root:root 0600:
+
+   ```
+   CONTROL_PLANE_API_KEY=…
+   CONTROL_PLANE_TUNNEL_ID=…
+   ```
+
+6. Profile, doctor, PM2:
+
+   ```bash
+   cd /opt/xeet-mcp && set -a && . ./.env && set +a
+   ./.runtime/tunnel-client init --sample sample_mcp_stdio_local --profile xeet-mcp --profile-dir /opt/xeet-mcp/tunnel-profile \
+     --tunnel-id "$CONTROL_PLANE_TUNNEL_ID" --mcp-command "/opt/xeet-mcp/xeet-mcp.sh serve" \
+     --control-plane-api-key-ref env:CONTROL_PLANE_API_KEY --health-listen-addr 127.0.0.1:0
+   ./.runtime/tunnel-client doctor --profile xeet-mcp --profile-dir /opt/xeet-mcp/tunnel-profile --explain   # all PASS
+   pm2 start ecosystem.config.cjs && pm2 save
+   pm2 logs xeet-mcp-tunnel --lines 20         # "tunnel-client started", "tunnel metadata fetched"
+   curl "$(cat tunnel-profile/health-url)/readyz"
+   ```
+
+7. ChatGPT: Settings → Apps → Developer Mode → Create → Connection **Tunnel**
+   → Scan Tools shows exactly the three tools → Create.
+
+### Restart / rollback (VPS)
+
+```bash
+pm2 restart xeet-mcp-tunnel                     # after replacing bin/xeet or the profile
+pm2 stop xeet-mcp-tunnel                        # ChatGPT loses the tunnel; nothing else changes
+pm2 delete xeet-mcp-tunnel && pm2 save          # remove from PM2 entirely
+install -m 0755 /opt/xeet-mcp/bin/xeet.prev /opt/xeet-mcp/bin/xeet && pm2 restart xeet-mcp-tunnel   # binary rollback (keep .prev on upgrade)
+```
+
+The server writes nothing, so a rollback is only the binary. Deleting the
+Tunnel or the ChatGPT app revokes access from that side; `shred -u
+/opt/xeet-mcp/home/secrets.yaml` revokes it from this side.
+
+## Deployment on the Mac (fallback)
 
 Files under `docs/mcp/` are templates; copy and edit, do not run in place.
 
