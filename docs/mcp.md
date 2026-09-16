@@ -254,6 +254,16 @@ Templates live in `docs/mcp/vps/`. Layout on the host:
    chown -R xeetmcp:xeetmcp /opt/xeet-mcp/home /opt/xeet-mcp/tunnel-profile && chmod 700 /opt/xeet-mcp/home /opt/xeet-mcp/tunnel-profile
    ```
 
+   Then copy the cached GraphQL query ids (non-secret) from the Mac. The
+   `Bookmarks` operation is not in the bundles xeet's discovery scans, so
+   without `bookmarks_qid` the VPS answers `UPSTREAM_CHANGED` for bookmarks
+   while search still works. Repeat this whenever the Mac's ids change:
+
+   ```bash
+   grep -E '^(bookmarks_qid|search_timeline_qid|viewer_qid|home_timeline_qid|home_latest_timeline_qid):' ~/.xeet.yaml \
+   | ssh xserver-vps 'umask 077; cat >> /opt/xeet-mcp/home/.xeet.yaml && chown xeetmcp:xeetmcp /opt/xeet-mcp/home/.xeet.yaml'
+   ```
+
 3. Copy the two cookie values from the Mac Keychain. The values never
    appear on a terminal; the store decodes the Keychain wrapper itself:
 
