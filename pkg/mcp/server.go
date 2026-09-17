@@ -1,11 +1,12 @@
-// Package mcp exposes xeet's read-only X lookups (post search, bookmarks,
-// session health) as a Model Context Protocol server over stdio.
+// Package mcp exposes xeet's X lookups (post search, bookmarks, session
+// health) and, only when the deployment opts in, posting and likes, as a Model
+// Context Protocol server over stdio.
 //
-// The package is the whole allowlist: it constructs the server, registers
-// exactly three tools, and owns the only path from a tool call to the X web
-// client. Posting, liking, bookmarking, and following live in pkg/api too, but
-// nothing here can reach them, so tools/list is the security boundary rather
-// than a hint.
+// The package is the whole allowlist: it constructs the server, registers the
+// three read tools plus the two write tools when AllowWrite is set, and owns
+// the only path from a tool call to the X web client. Reposting, quoting,
+// bookmarking, following, and messaging live in pkg/api too, but nothing here
+// can reach them, so tools/list is the security boundary rather than a hint.
 package mcp
 
 import (
@@ -199,11 +200,9 @@ func New(opts Options) (*Server, error) {
 		now:           now,
 		cache:         sessionCache{sessions: map[string]cachedSession{}},
 	}
-	s.mcp = sdk.NewServer(&sdk.Implementation{Name: "xeet", Title: "xeet (X search and bookmarks, read-only)", Version: version}, &sdk.ServerOptions{
-		Instructions: instructionsFor(opts.AllowWrite) +
-			"Results carry status (ok, empty, partial, error), fetched_at, and a next_cursor when X has more; " +
-			"complete=false with error.code=PARTIAL_RESULT means a later page failed and the posts returned are only what was fetched before that.",
-		Logger: logger,
+	s.mcp = sdk.NewServer(&sdk.Implementation{Name: "xeet", Title: titleFor(opts.AllowWrite), Version: version}, &sdk.ServerOptions{
+		Instructions: instructionsFor(opts.AllowWrite),
+		Logger:       logger,
 	})
 	s.register()
 	return s, nil
@@ -226,6 +225,16 @@ func ToolNames(allowWrite bool) []string {
 		names = append(names, ToolPostPost, ToolSetLike)
 	}
 	return names
+}
+
+// titleFor keeps the advertised title honest about what the deployment can do:
+// a client that sees "read-only" and then a post tool has no way to tell which
+// one to believe.
+func titleFor(allowWrite bool) string {
+	if allowWrite {
+		return "xeet (X search, bookmarks, posting and likes)"
+	}
+	return "xeet (X search and bookmarks, read-only)"
 }
 
 func instructionsFor(allowWrite bool) string {
