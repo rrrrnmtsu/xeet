@@ -22,6 +22,17 @@ type Session interface {
 	FetchViewer(ctx context.Context) (*api.Account, error)
 }
 
+// WriteSession is the mutation half, kept separate from Session so a
+// read-only server literally cannot reach it: the write tools type-assert for
+// this interface and refuse when the session does not implement it. The set is
+// deliberately two calls. Reposting, quoting, bookmarking, following and
+// direct messages are not here and cannot be reached from MCP.
+type WriteSession interface {
+	Session
+	PostTweet(ctx context.Context, text, replyToID string, uploads []api.Upload, progress api.ProgressFunc) (string, error)
+	SetTweetLiked(ctx context.Context, tweetID string, liked bool) error
+}
+
 // Store is the slice of config.ConfigManager the server reads. None of these
 // write: the server never persists rediscovered query ids or viewer identity,
 // so it cannot rewrite a config file the interactive xeet also owns.

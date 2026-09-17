@@ -254,16 +254,17 @@ and `ctrl+o` file attachment still works.
 
 </details>
 
-## mcp (read-only)
+## mcp
 
-`xeet mcp serve` exposes post search, your bookmarks, and a session health
-check to mcp clients (chatgpt through a secure mcp tunnel, claude code, codex)
-over stdio. it reads through the saved browser session and can only read:
-the three tools are the whole surface, and nothing there posts, likes, or
-bookmarks.
+`xeet mcp serve` exposes x to mcp clients (chatgpt through a secure mcp
+tunnel, claude code, codex) over stdio, through the saved browser session.
+reads are always there: post search, your bookmarks, a session health check.
+posting and likes only appear with `--allow-write`, and nothing else does:
+no reposts, quotes, bookmark changes, follows, dms, or media.
 
 ```bash
-xeet mcp serve --allow-account @you        # only allowlisted accounts, no fallback
+xeet mcp serve --allow-account @you                 # read-only
+xeet mcp serve --allow-account @you --allow-write   # plus post_x_post and set_x_post_like
 xeet mcp call get_x_session_health --allow-account @you
 ```
 

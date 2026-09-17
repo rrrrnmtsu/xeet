@@ -89,6 +89,11 @@ type fakeSession struct {
 	viewerErr error
 	block     bool // hold every call until the context ends
 
+	postID   string
+	postErr  error
+	likeErr  error
+	postText []string
+
 	mu    sync.Mutex
 	calls []string
 }
@@ -147,6 +152,37 @@ func (f *fakeSession) FetchViewer(ctx context.Context) (*api.Account, error) {
 	return f.viewer, nil
 }
 
+func (f *fakeSession) PostTweet(ctx context.Context, text, replyToID string, uploads []api.Upload, progress api.ProgressFunc) (string, error) {
+	f.record("post:" + text + "|reply=" + replyToID)
+	f.mu.Lock()
+	f.postText = append(f.postText, text)
+	f.mu.Unlock()
+	if f.block {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	if f.postErr != nil {
+		return "", f.postErr
+	}
+	if len(uploads) != 0 {
+		return "", errors.New("fixture received media; the write path must never send any")
+	}
+	id := f.postID
+	if id == "" {
+		id = "9001"
+	}
+	return id, nil
+}
+
+func (f *fakeSession) SetTweetLiked(ctx context.Context, tweetID string, liked bool) error {
+	f.record(fmt.Sprintf("like:%s=%v", tweetID, liked))
+	if f.block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return f.likeErr
+}
+
 func post(id, handle, text string, known bool) api.TimelinePost {
 	return api.TimelinePost{
 		ID: id, Text: text, AuthorName: strings.ToUpper(handle[:1]) + handle[1:], Handle: handle,
@@ -166,6 +202,8 @@ type harness struct {
 	now     time.Time
 }
 
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
 func newHarness(t *testing.T, store *fakeStore, fake *fakeSession, mutate func(*Options)) *harness {
 	t.Helper()
 	now := time.Date(2026, 9, 16, 9, 0, 0, 0, time.UTC)
@@ -176,7 +214,7 @@ func newHarness(t *testing.T, store *fakeStore, fake *fakeSession, mutate func(*
 		PageDelay:       0,
 		Now:             func() time.Time { return now },
 		Version:         "test",
-		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:          discardLogger(),
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -265,7 +303,7 @@ func TestToolListIsExactlyTheThreeReadTools(t *testing.T) {
 			t.Errorf("%s is annotated destructive", tool.Name)
 		}
 	}
-	want := ToolNames()
+	want := ToolNames(false)
 	sort.Strings(names)
 	sort.Strings(want)
 	if strings.Join(names, ",") != strings.Join(want, ",") {

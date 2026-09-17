@@ -29,12 +29,18 @@ var (
 	mcpMaxConcurrent int
 	mcpPageDelay     time.Duration
 	mcpSecretsFile   string
+	mcpAllowWrite    bool
+	mcpWriteQuota    int
 
 	mcpCallQuery   string
 	mcpCallAccount string
 	mcpCallLimit   int
 	mcpCallCursor  string
 	mcpCallTimeout int
+	mcpCallText    string
+	mcpCallPostID  string
+	mcpCallReplyTo string
+	mcpCallUnlike  bool
 )
 
 var mcpCmd = &cobra.Command{
@@ -44,13 +50,18 @@ var mcpCmd = &cobra.Command{
 get_x_session_health) to MCP clients such as ChatGPT, Claude, or an editor.
 
 Only accounts named with --allow-account (or ` + allowedAccountsEnv + `) can be
-read; there is no fallback to the active account. Nothing here can post, like,
-bookmark, follow, or message.`,
-	Example: `  xeet mcp serve --allow-account @alice                 # stdio server for one account
-  xeet mcp serve --allow-account 1234 --allow-account 5678
+reached; there is no fallback to the active account.
+
+Writing is off unless --allow-write is passed, and then the surface is exactly
+two tools: post_x_post (post or reply) and set_x_post_like. Reposting, quoting,
+bookmarking, following, direct messages and media uploads are not implemented
+here and cannot be reached from MCP.`,
+	Example: `  xeet mcp serve --allow-account @alice                 # read-only stdio server
+  xeet mcp serve --allow-account @alice --allow-write   # also posting and likes
   xeet mcp tools --allow-account @alice                 # what a client would see
   xeet mcp call get_x_session_health --allow-account @alice
-  xeet mcp call search_x_posts --allow-account @alice --query "go tui" --limit 5`,
+  xeet mcp call search_x_posts --allow-account @alice --query "go tui" --limit 5
+  xeet mcp call post_x_post --allow-account @alice --allow-write --text "hello"`,
 }
 
 var mcpServeCmd = &cobra.Command{
@@ -74,7 +85,7 @@ var mcpCallCmd = &cobra.Command{
 remote client would, over an in-memory transport, and prints the structured
 result. Exit status: 0 for ok or empty, 2 for partial, 1 for error.`,
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: xmcp.ToolNames(),
+	ValidArgs: xmcp.ToolNames(true),
 	RunE:      runMCPCall,
 }
 
@@ -89,12 +100,20 @@ func init() {
 		command.Flags().DurationVar(&mcpPageDelay, "page-delay", xmcp.DefaultPageDelay, "pause between upstream pages within one call")
 		command.Flags().StringVar(&mcpSecretsFile, "secrets-file", "",
 			"read session cookies from this 0600 file instead of the OS keyring (headless hosts). Falls back to "+secretsFileEnv)
+		command.Flags().BoolVar(&mcpAllowWrite, "allow-write", false,
+			"also expose post_x_post and set_x_post_like. Off by default: without it the server has no way to post or like")
+		command.Flags().IntVar(&mcpWriteQuota, "write-quota", 0,
+			"writes allowed per rolling hour across the process (default 10)")
 	}
 	mcpCallCmd.Flags().StringVar(&mcpCallQuery, "query", "", "search query (search_x_posts)")
 	mcpCallCmd.Flags().StringVar(&mcpCallAccount, "account", "", "account_id argument (handle or user id)")
 	mcpCallCmd.Flags().IntVar(&mcpCallLimit, "limit", 0, "limit argument, 1-100 (default 20)")
 	mcpCallCmd.Flags().StringVar(&mcpCallCursor, "cursor", "", "cursor argument from a previous result")
 	mcpCallCmd.Flags().IntVar(&mcpCallTimeout, "timeout-seconds", 0, "timeout_seconds argument, 1-60")
+	mcpCallCmd.Flags().StringVar(&mcpCallText, "text", "", "text argument (post_x_post)")
+	mcpCallCmd.Flags().StringVar(&mcpCallPostID, "post-id", "", "post_id argument (set_x_post_like)")
+	mcpCallCmd.Flags().StringVar(&mcpCallReplyTo, "reply-to", "", "reply_to_id argument (post_x_post)")
+	mcpCallCmd.Flags().BoolVar(&mcpCallUnlike, "unlike", false, "send liked=false (set_x_post_like)")
 
 	mcpCmd.AddCommand(mcpServeCmd, mcpToolsCmd, mcpCallCmd)
 	rootCmd.AddCommand(mcpCmd)
@@ -143,6 +162,8 @@ func newMCPServer() (*xmcp.Server, error) {
 		HealthTimeout:   mcpHealthTimeout,
 		MaxPages:        mcpMaxPages,
 		MaxConcurrent:   mcpMaxConcurrent,
+		AllowWrite:      mcpAllowWrite,
+		WriteQuota:      mcpWriteQuota,
 		PageDelay:       mcpPageDelay,
 		Stderr:          os.Stderr,
 		Version:         appVersion,
@@ -223,6 +244,18 @@ func runMCPCall(cmd *cobra.Command, args []string) error {
 	}
 	if mcpCallTimeout != 0 {
 		arguments["timeout_seconds"] = mcpCallTimeout
+	}
+	if mcpCallText != "" {
+		arguments["text"] = mcpCallText
+	}
+	if mcpCallPostID != "" {
+		arguments["post_id"] = mcpCallPostID
+	}
+	if mcpCallReplyTo != "" {
+		arguments["reply_to_id"] = mcpCallReplyTo
+	}
+	if mcpCallUnlike {
+		arguments["liked"] = false
 	}
 
 	server, err := newMCPServer()

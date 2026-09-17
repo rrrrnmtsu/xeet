@@ -33,6 +33,14 @@ const (
 	CodePartialResult       Code = "PARTIAL_RESULT"
 	CodeBusy                Code = "BUSY"
 	CodeInternal            Code = "INTERNAL"
+
+	// Write-only failure classes. AMBIGUOUS_WRITE is the one a caller must
+	// never retry blindly: X did not confirm the post, and it may exist.
+	CodeWriteDisabled   Code = "WRITE_DISABLED"
+	CodeAmbiguousWrite  Code = "AMBIGUOUS_WRITE"
+	CodeRejectedByX     Code = "REJECTED_BY_X"
+	CodeDuplicateRecent Code = "DUPLICATE_RECENT"
+	CodeWriteQuota      Code = "WRITE_QUOTA"
 )
 
 // Failure is the error object embedded in a tool result. Cause is set only on
@@ -65,6 +73,23 @@ func classify(err error) *Failure {
 	var failure *Failure
 	if errors.As(err, &failure) {
 		return failure
+	}
+
+	var ambiguous *api.AmbiguousPostError
+	if errors.As(err, &ambiguous) {
+		return failf(CodeAmbiguousWrite, err.Error())
+	}
+	var recent *api.RecentlyPostedError
+	if errors.As(err, &recent) {
+		return failf(CodeDuplicateRecent, err.Error())
+	}
+	var automation *api.AutomationBlockedError
+	if errors.As(err, &automation) {
+		return failf(CodeRejectedByX, err.Error())
+	}
+	var restricted *api.PostingRestrictedError
+	if errors.As(err, &restricted) {
+		return failf(CodeRejectedByX, err.Error())
 	}
 
 	var rateLimit *api.RateLimitError

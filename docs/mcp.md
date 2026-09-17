@@ -1,9 +1,10 @@
 # xeet mcp: read-only X search and bookmarks over MCP
 
-`xeet mcp serve` exposes three read-only tools to any Model Context Protocol
-client (ChatGPT through a Secure MCP Tunnel, Claude Code, Codex, an editor)
-over stdio. It reuses the browser session `xeet auth` saved, so there is no
-API key, and it can only read.
+`xeet mcp serve` exposes X to any Model Context Protocol client (ChatGPT
+through a Secure MCP Tunnel, Claude Code, Codex, an editor) over stdio. It
+reuses the browser session `xeet auth` saved, so there is no API key.
+
+Read tools, always present:
 
 ```
 search_x_posts(query, account_id?, limit?, cursor?, timeout_seconds?)
@@ -11,16 +12,28 @@ get_x_bookmarks(account_id?, limit?, cursor?, timeout_seconds?)
 get_x_session_health(account_id?, timeout_seconds?)
 ```
 
-Nothing in `pkg/mcp` can reach a mutation: the package talks to the X client
-through a three-method interface (search, bookmarks, viewer), and the tool
-list *is* the allowlist. Posting, liking, bookmarking, reposting, following
-and messaging are not registered and cannot be called.
+Write tools, only with `--allow-write`:
+
+```
+post_x_post(text, account_id?, reply_to_id?, timeout_seconds?)
+set_x_post_like(post_id, liked?, account_id?, timeout_seconds?)
+```
+
+Without that flag the write tools are not registered at all: they are absent
+from `tools/list`, and calling one is an unknown-tool protocol error rather
+than a refusal. The read path talks to X through a three-method interface
+(search, bookmarks, viewer); the write path needs a session that also
+implements the two mutation methods, so a read-only server has no code path
+to a mutation. Reposting, quoting, bookmark changes, following, direct
+messages and media uploads are not implemented here and cannot be reached
+from MCP whatever the flags.
 
 ## Running it
 
 ```bash
-xeet mcp serve --allow-account @alice            # one account: account_id may be omitted
+xeet mcp serve --allow-account @alice            # read-only; account_id may be omitted
 xeet mcp serve --allow-account 1234 --allow-account @bob   # several: account_id is required
+xeet mcp serve --allow-account @alice --allow-write        # plus posting and likes
 XEET_MCP_ALLOWED_ACCOUNTS=@alice xeet mcp serve  # same, for launchd / systemd units
 ```
 
@@ -33,6 +46,8 @@ XEET_MCP_ALLOWED_ACCOUNTS=@alice xeet mcp serve  # same, for launchd / systemd u
 | `--page-delay` | 1s | | pause between pages inside one call |
 | `--max-concurrent` | 1 | | calls in flight; others wait 5s then get `BUSY` |
 | `--secrets-file` | (OS keyring) | | read cookies from this 0600 YAML instead of the keyring; env `XEET_MCP_SECRETS_FILE` |
+| `--allow-write` | off | | register `post_x_post` and `set_x_post_like` |
+| `--write-quota` | 10 | | writes per rolling hour for the whole process |
 
 stdout carries the protocol only. Diagnostics are JSON lines on stderr
 (tool, account id, status, code, count, duration) and never include the
@@ -52,9 +67,17 @@ xeet mcp call search_x_posts --allow-account @alice --query "go tui" --limit 5
 xeet mcp call get_x_bookmarks  --allow-account @alice --limit 5 --cursor "$NEXT"
 ```
 
+```bash
+xeet mcp call post_x_post    --allow-account @alice --allow-write --text "hello"
+xeet mcp call post_x_post    --allow-account @alice --allow-write --text "thanks" --reply-to 1234567890
+xeet mcp call set_x_post_like --allow-account @alice --allow-write --post-id 1234567890
+xeet mcp call set_x_post_like --allow-account @alice --allow-write --post-id 1234567890 --unlike
+```
+
 `call` runs a real MCP client against the server over an in-memory pipe, so
 it exercises initialize, tools/list and tools/call, not the handler directly.
-Exit status: 0 for `ok` or `empty`, 2 for `partial`, 1 for `error`.
+Exit status: 0 for `ok` or `empty`, 2 for `partial`, 1 for `error`. A
+`post_x_post` call from here publishes immediately: there is no dry run.
 
 ## Account selection
 
@@ -162,6 +185,37 @@ contain X's pagination cursor only, never session material.
 check is one authenticated `Viewer` read; it never logs in, imports cookies,
 or opens a browser. `last_authenticated_at` is per server process.
 
+### post_x_post / set_x_post_like
+
+```json
+{
+  "status": "ok",
+  "tool": "post_x_post",
+  "action": "create_post",
+  "account_id": "1234",
+  "account_handle": "alice",
+  "applied": true,
+  "post_id": "2100000000000000001",
+  "post_url": "https://x.com/alice/status/2100000000000000001",
+  "attempted_at": "2026-09-17T06:10:00Z",
+  "writes_left_this_hour": 9
+}
+```
+
+- `applied` is the only field that says whether X did the thing. It is true
+  only when X confirmed it.
+- `applied: false` with `error.code=AMBIGUOUS_WRITE` means the post may or
+  may not exist. Check the profile before retrying; the server never retries
+  a post itself, and the quota slot stays spent. Every other error with
+  `applied: false` means nothing was written and the slot is returned.
+- `text` is sent verbatim. Nothing is appended, and media is never attached.
+- `set_x_post_like` is idempotent: liking an already-liked post succeeds and
+  changes nothing. Pass `liked: false` to remove a like.
+- Posts and likes are public and this server has no delete tool. Undoing a
+  post means deleting it in X.
+- Both tools draw from the same `--write-quota` budget, reported as
+  `writes_left_this_hour`.
+
 ### Error codes
 
 | code | meaning | fix |
@@ -181,6 +235,11 @@ or opens a browser. `last_authenticated_at` is per server process.
 | `NETWORK_ERROR` | DNS/connect failure | check connectivity |
 | `PARTIAL_RESULT` | a page after the first failed; see `cause` | resume with `next_cursor` |
 | `BUSY` | concurrency cap reached | retry shortly |
+| `WRITE_DISABLED` | the server was started without `--allow-write` | restart with the flag |
+| `WRITE_QUOTA` | the rolling-hour write budget is full | wait, or raise `--write-quota` |
+| `AMBIGUOUS_WRITE` | X did not confirm the post; it may exist | check the profile, never auto-retry |
+| `REJECTED_BY_X` | X refused this post as automation or under a restriction | edit the text or try later |
+| `DUPLICATE_RECENT` | X classified the text as recently posted | change the text |
 
 ## Where to run it
 
@@ -420,6 +479,24 @@ When it reports `KEYRING_UNAVAILABLE` on the Mac, the Keychain is locked
 
 Claude Code, Codex or any stdio client can use the same command; see
 `docs/mcp/mcp.json`. Only the tools above are exposed regardless of client.
+
+## Enabling writes on the VPS
+
+The deployed wrapper decides this, not the caller. Add the flag to
+`/opt/xeet-mcp/xeet-mcp.sh` (the `exec` line), then restart:
+
+```bash
+ssh xserver-vps "sed -i 's|\"\$BASE/bin/xeet\" mcp|\"\$BASE/bin/xeet\" mcp --allow-write|' /opt/xeet-mcp/xeet-mcp.sh"   # or edit by hand
+ssh xserver-vps "pm2 restart xeet-mcp-tunnel"
+```
+
+ChatGPT caches the tool list, so re-scan the plugin (Settings → プラグイン →
+xeet → refresh, or remove and re-add) before the two write tools appear. Keep
+the plugin's permission setting at "confirm every time" for write actions:
+the model reads post text from search and bookmark results, and that text is
+untrusted input that must never become an instruction to post.
+
+To go back to read-only, drop the flag and restart. Nothing else changes.
 
 ## Three questions to confirm the ChatGPT end to end
 
