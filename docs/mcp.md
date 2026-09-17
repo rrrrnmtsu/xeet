@@ -434,3 +434,19 @@ Claude Code, Codex or any stdio client can use the same command; see
 
 A useful negative check: ask it to like or repost one of the results. The
 correct answer is that no such tool exists.
+
+## Deployed state (as of 2026-09-17)
+
+| | value |
+|---|---|
+| source commit | `93099e6` (`xeet version -v` on the host reports it) |
+| host path | `/opt/xeet-mcp` on xserver-vps, user `xeetmcp` |
+| process | PM2 app `xeet-mcp-tunnel` |
+| tunnel | `xeet-mcp` (`tunnel_6aaa091970688191a02314cadfd7d653`) |
+| ChatGPT plugin | `xeet`, connection Tunnel, auth none, developer mode |
+| rollback binary | `/opt/xeet-mcp/bin/xeet.prev` |
+
+Verified end to end from ChatGPT: session health (authenticated, account
+matches), a three-result search, and bookmarks paged twice through
+`next_cursor` with no overlapping ids. Asked to like a post, it answers that
+no such tool exists.
