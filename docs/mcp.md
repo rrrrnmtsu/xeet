@@ -516,14 +516,29 @@ correct answer is that no such tool exists.
 
 | | value |
 |---|---|
-| source commit | `93099e6` (`xeet version -v` on the host reports it) |
+| source commit | `58f4752` / `xeet v0.1.9-37-g58f4752` (`xeet version` on the host reports it) |
 | host path | `/opt/xeet-mcp` on xserver-vps, user `xeetmcp` |
 | process | PM2 app `xeet-mcp-tunnel` |
 | tunnel | `xeet-mcp` (`tunnel_6aaa091970688191a02314cadfd7d653`) |
-| ChatGPT plugin | `xeet`, connection Tunnel, auth none, developer mode |
-| rollback binary | `/opt/xeet-mcp/bin/xeet.prev` |
+| ChatGPT plugin | `xeet` (`asdk_app_6aab98e57760819189789380b2c00874`), connection Tunnel, auth none, developer mode |
+| writes | enabled: the wrapper ends in `mcp "$@" --allow-write`, quota 10/hour |
+| tools | 5: `search_x_posts`, `get_x_bookmarks`, `get_x_session_health`, `post_x_post`, `set_x_post_like` |
+| rollback binary | `/opt/xeet-mcp/bin/xeet.prev` (`v0.1.9-35-gee1fccd`) |
 
 Verified end to end from ChatGPT: session health (authenticated, account
 matches), a three-result search, and bookmarks paged twice through
-`next_cursor` with no overlapping ids. Asked to like a post, it answers that
-no such tool exists.
+`next_cursor` with no overlapping ids.
+
+With writes enabled, a like followed by an unlike on the same post both
+returned `applied=true` and decremented the hourly quota, which the host's
+audit log corroborates:
+
+```
+"tool":"set_x_post_like","action":"like_post","status":"ok","applied":true,"writes_left":9
+"tool":"set_x_post_like","action":"unlike_post","status":"ok","applied":true,"writes_left":8
+```
+
+ChatGPT caches a connector's tool schema when the connector is created, so
+adding tools to a running deployment is not picked up by disconnecting and
+reconnecting. The superseded read-only connector was deleted and a new one
+created against the same tunnel; that is what made all five tools visible.
