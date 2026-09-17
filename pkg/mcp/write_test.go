@@ -380,3 +380,24 @@ func TestInstructionsWarnAboutInjectionOnlyWhenWritesExist(t *testing.T) {
 		t.Fatalf("read-only instructions = %q", readText)
 	}
 }
+
+func TestInstructionsStateEachSentenceOnce(t *testing.T) {
+	for _, allowWrite := range []bool{false, true} {
+		text := instructionsFor(allowWrite)
+		const tail = "Results carry status (ok, empty, partial, error)"
+		if got := strings.Count(text, tail); got != 1 {
+			t.Fatalf("allowWrite=%v: result-shape sentence appears %d times, want 1: %q", allowWrite, got, text)
+		}
+	}
+}
+
+func TestTitleSaysWhetherTheServerCanWrite(t *testing.T) {
+	readTitle := titleFor(false)
+	if !strings.Contains(readTitle, "read-only") {
+		t.Fatalf("read-only title = %q", readTitle)
+	}
+	writeTitle := titleFor(true)
+	if strings.Contains(writeTitle, "read-only") {
+		t.Fatalf("write-enabled title still claims read-only: %q", writeTitle)
+	}
+}
