@@ -109,6 +109,16 @@ func operationHint(operation string) string {
 	if strings.Contains(operation, "Home") {
 		return "HomeTimeline"
 	}
+	if operation == "SearchTimeline" {
+		return "SearchTimeline"
+	}
+	// The list read operations ship in the shared timeline chunk, which is named
+	// for the bundles that pull it — Bookmarks, Explore, HomeTimeline — and never
+	// for List. Hinting "List" only finds the list *management* bundles
+	// (UserLists, ListHandler), none of which carry these operations.
+	if operation == listLatestTweetsOperation || operation == listsManagementPageOperation {
+		return "HomeTimeline"
+	}
 	if strings.Contains(operation, "Tweet") {
 		return "Compose"
 	}

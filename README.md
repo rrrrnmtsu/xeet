@@ -103,6 +103,13 @@ then just:
 ```bash
 xeet                                  # browse your timeline, images and all
 xeet --following                      # start on the following feed
+xeet --bookmarks                      # start on your bookmarks
+xeet lists                            # pick a list and browse it
+xeet --list 1234567890                # start on a list by id
+xeet search "go tui"                  # search posts and browse results
+xeet --columns 2                      # show two side-by-side feeds
+xeet --columns foryou,bookmarks       # choose each column's feed
+xeet columns save "foryou,following"  # save the default layout
 xeet --barebones                      # text-only feed
 xeet --compose                        # skip the feed, open the composer
 xeet post "hello from my shell"       # one-shot post
@@ -118,7 +125,8 @@ if your session feels off:
 xeet whoami            # which account is connected
 xeet doctor            # session metadata + one authenticated read
 xeet doctor --offline  # local metadata only, no network
-xeet logout            # delete xeet's copy of the session
+xeet logout            # delete xeet's active session
+xeet logout --all      # delete every xeet session and the config file
 ```
 
 diagnostics print a short fingerprint and the browser/profile, never the
@@ -156,6 +164,9 @@ come back next time.
 |---|---|
 | `j` / `k` / arrows | move (`ctrl+d`/`ctrl+u` jumps five) |
 | `f` | switch between the for you and following feeds |
+| `b` | switch between bookmarks and the for you feed |
+| `L` | pick a list to browse |
+| `/` | search posts |
 | `enter` | open the post's replies |
 | `e` / `space` | read a truncated post in full |
 | `i` | zoom the post's image to the whole terminal |
@@ -168,9 +179,28 @@ come back next time.
 | `R` | refresh in place, new posts stack on top, you keep your spot |
 | `?` | key guide + which image renderer is active and why |
 
-more posts load automatically near the bottom. inside a conversation,
-`j`/`k` moves through replies, `r` replies to the selected item, `R`
-reloads, and `esc` drops you back exactly where you were in the timeline.
+more posts load automatically near the bottom; search results and list
+timelines behave like any other feed, so like, reply, and thread all work
+there too. inside a
+conversation, `j`/`k` moves through replies, `r` replies to the selected
+item, `R` reloads, and `esc` drops you back exactly where you were in the
+timeline.
+
+### multi-column
+
+`--columns 2` through `--columns 4` repeats the selected feed in equal-width
+columns. a comma-separated layout can mix `foryou`, `following`, `bookmarks`,
+`list:<id>`, and `search:<query>`. `xeet columns save "..."` writes that
+layout to `~/.xeet.yaml`; trying a layout never saves it implicitly.
+`tab` / `shift+tab` (or `]` / `[`) moves focus; navigation and post actions
+apply to the focused column. if the terminal is too narrow, xeet shows only
+the columns that fit and tells you how many are hidden.
+
+ansi previews and kitty/ghostty Unicode-placeholder images compose across
+columns. iterm2 and wezterm inline images rely on relative cursor movement,
+which cannot be composed safely side by side, so multi-column runs fall back
+to ansi even with `--images native`. the `?` help overlay shows the fallback
+note.
 
 **themes**
 
@@ -224,14 +254,36 @@ and `ctrl+o` file attachment still works.
 
 </details>
 
+## mcp
+
+`xeet mcp serve` exposes x to mcp clients (chatgpt through a secure mcp
+tunnel, claude code, codex) over stdio, through the saved browser session.
+reads are always there: post search, your bookmarks, a session health check.
+posting and likes only appear with `--allow-write`, and nothing else does:
+no reposts, quotes, bookmark changes, follows, dms, or media.
+
+```bash
+xeet mcp serve --allow-account @you                 # read-only
+xeet mcp serve --allow-account @you --allow-write   # plus post_x_post and set_x_post_like
+xeet mcp call get_x_session_health --allow-account @you
+```
+
+see [docs/mcp.md](docs/mcp.md) for the output contract, error codes, and the
+launchd + tunnel deployment.
+
 ## how it works
 
 xeet reuses the x.com session already in your browser and speaks the same
 unsupported internal graphql endpoints the website does. the imported
 `auth_token` and `ct0` cookies grant account-level access, so treat them
 like a password. they live in the macos keychain or linux secret service, never
-in the yaml config file. `xeet logout` deletes xeet's copy (your browser
-stays logged in).
+in the yaml config file. account metadata and global settings use config schema
+v2 in `~/.xeet.yaml`; sessions from older installs migrate offline on first
+load. don't run an older xeet binary after migration: it cannot understand the
+`accounts:` block and may erase it when saving. new binaries refuse writes to
+config versions newer than they understand. `xeet logout` deletes the active
+session and `xeet logout --all` deletes every saved session (your browser stays
+logged in).
 
 <details>
 <summary>details: query ids and retries</summary>

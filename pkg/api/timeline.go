@@ -27,20 +27,25 @@ type TimelineMedia struct {
 }
 
 type TimelinePost struct {
-	ID             string
-	Text           string
-	AuthorName     string
-	Handle         string
-	CreatedAt      time.Time
-	ReplyCount     int
-	RepostCount    int
-	LikeCount      int
-	ViewCount      string
-	MediaCount     int
-	Media          []TimelineMedia
-	Liked          bool
-	InReplyToID    string
-	ConversationID string
+	ID          string
+	Text        string
+	AuthorName  string
+	Handle      string
+	CreatedAt   time.Time
+	ReplyCount  int
+	RepostCount int
+	LikeCount   int
+	// EngagementKnown reports whether X included the reply/repost/like
+	// counters for this post at all. A zero count with EngagementKnown false is
+	// "not provided", not "nobody reacted"; callers that serialize counts
+	// should emit null in that case rather than 0.
+	EngagementKnown bool
+	ViewCount       string
+	MediaCount      int
+	Media           []TimelineMedia
+	Liked           bool
+	InReplyToID     string
+	ConversationID  string
 }
 
 type TimelinePage struct {
@@ -112,6 +117,18 @@ func (c *WebClient) FetchFollowingTimeline(ctx context.Context, cursor string, c
 }
 
 func (c *WebClient) fetchTimeline(ctx context.Context, operation, fallback, environment, cursor string, count int) (*TimelinePage, error) {
+	return c.fetchTimelineOp(ctx, operation, fallback, environment, count, false, func(count int) map[string]any {
+		return timelineVariables(cursor, count)
+	})
+}
+
+func (c *WebClient) fetchTimelineOp(
+	ctx context.Context,
+	operation, fallback, environment string,
+	count int,
+	withTransactionID bool,
+	buildVars func(count int) map[string]any,
+) (*TimelinePage, error) {
 	if c.authToken == "" || c.ct0 == "" {
 		return nil, fmt.Errorf("no session; run 'xeet auth' first")
 	}
@@ -119,17 +136,24 @@ func (c *WebClient) fetchTimeline(ctx context.Context, operation, fallback, envi
 		count = 30
 	}
 	qid := c.operationQueryID(operation, fallback, environment)
+	if qid == "" {
+		fresh, discoverErr := c.discoverOperation(ctx, operation)
+		if discoverErr != nil {
+			return nil, fmt.Errorf("%w: discover %s endpoint: %w", ErrUpstreamChanged, operation, discoverErr)
+		}
+		qid = fresh
+	}
 
-	res, err := c.doTimeline(ctx, operation, qid, cursor, count)
+	res, err := c.doTimelineOp(ctx, operation, qid, buildVars(count), withTransactionID)
 	if err != nil {
 		return nil, err
 	}
 	if needsQueryIDRefresh(res) {
 		fresh, discoverErr := c.discoverOperation(ctx, operation)
 		if discoverErr != nil {
-			return nil, fmt.Errorf("home timeline endpoint changed and discovery failed: %w", discoverErr)
+			return nil, fmt.Errorf("%w: %s endpoint changed and discovery failed: %w", ErrUpstreamChanged, operation, discoverErr)
 		}
-		res, err = c.doTimeline(ctx, operation, fresh, cursor, count)
+		res, err = c.doTimelineOp(ctx, operation, fresh, buildVars(count), withTransactionID)
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +174,7 @@ func (c *WebClient) fetchTimeline(ctx context.Context, operation, fallback, envi
 	}
 	root, ok := payload.(map[string]any)
 	if !ok || root["data"] == nil {
-		return nil, fmt.Errorf("x returned a malformed timeline response")
+		return nil, fmt.Errorf("%w: x returned a malformed timeline response", ErrUpstreamChanged)
 	}
 	if err := graphQLError(payload); err != nil {
 		return nil, err
@@ -159,8 +183,7 @@ func (c *WebClient) fetchTimeline(ctx context.Context, operation, fallback, envi
 	return &page, nil
 }
 
-// doTimeline is a read, so transient failures are retried.
-func (c *WebClient) doTimeline(ctx context.Context, operation, qid, cursor string, count int) (*httpResult, error) {
+func timelineVariables(cursor string, count int) map[string]any {
 	variables := map[string]any{
 		"count":                  count,
 		"includePromotedContent": true,
@@ -173,6 +196,12 @@ func (c *WebClient) doTimeline(ctx context.Context, operation, qid, cursor strin
 		variables["cursor"] = cursor
 		variables["requestContext"] = "scroll"
 	}
+	return variables
+}
+
+// Timeline reads are idempotent, so transient failures are retried here; the
+// mutation paths deliberately are not.
+func (c *WebClient) doTimelineOp(ctx context.Context, operation, qid string, variables map[string]any, withTransactionID bool) (*httpResult, error) {
 	variablesJSON, _ := json.Marshal(variables)
 	featuresJSON, _ := json.Marshal(timelineFeatures)
 	fieldTogglesJSON, _ := json.Marshal(timelineFieldToggles)
@@ -188,26 +217,88 @@ func (c *WebClient) doTimeline(ctx context.Context, operation, qid, cursor strin
 			return nil, err
 		}
 		c.setHeaders(req)
+		// The id is derived from the method, path, and current time, so it is
+		// minted per attempt rather than once per call: a retry that replays an
+		// earlier id is rejected exactly like a request that omits it.
+		if withTransactionID && c.transactionID != nil {
+			transactionID, err := c.transactionID(ctx, req.Method, req.URL.Path)
+			if err != nil {
+				return nil, fmt.Errorf("generate X transaction id: %w", err)
+			}
+			req.Header.Set("X-Client-Transaction-Id", transactionID)
+		}
 		return req, nil
 	}, true, 20<<20)
 }
 
 func parseTimeline(payload any) TimelinePage {
-	page := TimelinePage{}
+	posts, bottomCursor := parseEntries(payload)
+	return TimelinePage{Posts: posts, Cursor: bottomCursor}
+}
+
+// This deliberately duplicates parseConversation's walker instead of sharing
+// it: conversation.go changes frequently upstream, and coupling the two would
+// make rebases costlier without changing conversation behavior.
+func parseEntries(payload any) (posts []TimelinePost, bottomCursor string) {
 	seen := map[string]bool{}
+
+	parseItemContent := func(raw any) {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return
+		}
+		if post, ok := parseTimelineItem(item); ok && !seen[post.ID] {
+			seen[post.ID] = true
+			posts = append(posts, post)
+		}
+	}
+
+	parseCursor := func(item map[string]any) {
+		cursorType, _ := item["cursorType"].(string)
+		kind := strings.ToLower(cursorType)
+		if kind == "bottom" || strings.Contains(kind, "showmore") {
+			if value, _ := item["value"].(string); value != "" {
+				bottomCursor = value
+			}
+		}
+	}
+
+	parseEntry := func(raw any) {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return
+		}
+		content, _ := entry["content"].(map[string]any)
+		if content == nil {
+			content = entry
+		}
+		parseCursor(content)
+		if item, ok := content["itemContent"].(map[string]any); ok {
+			parseCursor(item)
+			parseItemContent(item)
+		}
+		if items, ok := content["items"].([]any); ok {
+			for _, rawItem := range items {
+				moduleItem, _ := rawItem.(map[string]any)
+				item, _ := moduleItem["item"].(map[string]any)
+				if item == nil {
+					item = moduleItem
+				}
+				if itemContent, ok := item["itemContent"].(map[string]any); ok {
+					parseCursor(itemContent)
+					parseItemContent(itemContent)
+				}
+			}
+		}
+	}
+
 	var walk func(any)
 	walk = func(node any) {
 		switch value := node.(type) {
 		case map[string]any:
-			if cursorType, _ := value["cursorType"].(string); strings.EqualFold(cursorType, "Bottom") {
-				if cursor, _ := value["value"].(string); cursor != "" {
-					page.Cursor = cursor
-				}
-			}
-			if item, ok := value["itemContent"].(map[string]any); ok {
-				if post, ok := parseTimelineItem(item); ok && !seen[post.ID] {
-					seen[post.ID] = true
-					page.Posts = append(page.Posts, post)
+			if entries, ok := value["entries"].([]any); ok {
+				for _, entry := range entries {
+					parseEntry(entry)
 				}
 				return
 			}
@@ -221,7 +312,7 @@ func parseTimeline(payload any) TimelinePage {
 		}
 	}
 	walk(payload)
-	return page
+	return posts, bottomCursor
 }
 
 func parseTimelineItem(item map[string]any) (TimelinePost, bool) {
@@ -254,6 +345,10 @@ func parseTimelineItem(item map[string]any) (TimelinePost, bool) {
 	post.ReplyCount = intValue(legacy["reply_count"])
 	post.RepostCount = intValue(legacy["retweet_count"])
 	post.LikeCount = intValue(legacy["favorite_count"])
+	_, hasReplies := legacy["reply_count"]
+	_, hasReposts := legacy["retweet_count"]
+	_, hasLikes := legacy["favorite_count"]
+	post.EngagementKnown = hasReplies || hasReposts || hasLikes
 	post.Liked, _ = legacy["favorited"].(bool)
 	post.InReplyToID, _ = legacy["in_reply_to_status_id_str"].(string)
 	post.ConversationID, _ = legacy["conversation_id_str"].(string)
