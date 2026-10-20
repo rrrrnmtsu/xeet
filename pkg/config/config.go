@@ -147,6 +147,9 @@ func NewConfigManager() (*ConfigManager, error) {
 	if err != nil {
 		return nil, err
 	}
+	if os.Getenv("XEET_SECRETS") == "file" {
+		return newConfigManagerAt(homeDir, &fileSecrets{path: filepath.Join(homeDir, ".xeet.secrets")}), nil
+	}
 	return newConfigManagerAt(homeDir, systemKeyring{}), nil
 }
 

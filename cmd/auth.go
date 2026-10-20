@@ -17,6 +17,7 @@ import (
 var (
 	authBrowser string
 	authProfile string
+	authFromCDP string
 )
 
 var authCmd = &cobra.Command{
@@ -38,12 +39,16 @@ can never overwrite a session that works.`,
 func init() {
 	authCmd.Flags().StringVar(&authBrowser, "browser", "", "browser to read the session from (skips the picker)")
 	authCmd.Flags().StringVar(&authProfile, "profile", "", "browser profile to read, when several are signed in")
+	authCmd.Flags().StringVar(&authFromCDP, "from-cdp", "", "read the session from a running Chromium's debugging endpoint (e.g. http://127.0.0.1:9222); --profile becomes the label saved with it")
 	rootCmd.AddCommand(authCmd)
 }
 
 // runAuth connects by reading the x.com session already present in the user's
 // browser, with no passwords, API keys, or login flow.
 func runAuth(cmd *cobra.Command, args []string) error {
+	if authFromCDP != "" {
+		return runAuthCDP(cmd.Context(), cmd.OutOrStdout(), authFromCDP, authProfile)
+	}
 	var browser string
 	if authBrowser != "" {
 		matched, ok := matchBrowser(authBrowser)
@@ -252,5 +257,27 @@ func runAuthPlain(ctx context.Context, out io.Writer, browser, profile string) e
 		who = fmt.Sprintf(" as @%s", conn.handle)
 	}
 	fmt.Fprintf(out, "✓ Connected%s via %s. Run `xeet` for your timeline or `xeet --compose` to post.\n", who, conn.source())
+	return nil
+}
+
+// runAuthCDP imports the session from a running Chromium over its debugging
+// port. It is always scripted: there is nothing to pick, the endpoint is the
+// browser.
+func runAuthCDP(ctx context.Context, out io.Writer, endpoint, label string) error {
+	fmt.Fprintf(out, "Reading your session from the browser at %s...\n", endpoint)
+	result, err := api.ImportCDPSession(ctx, endpoint)
+	if err != nil {
+		return err
+	}
+	result.Profile = label
+	conn, err := verifyAndSave(ctx, result, "Chrome (CDP)")
+	if err != nil {
+		return err
+	}
+	who := ""
+	if conn.handle != "" {
+		who = fmt.Sprintf(" as @%s", conn.handle)
+	}
+	fmt.Fprintf(out, "✓ Connected%s via %s.\n", who, conn.source())
 	return nil
 }
